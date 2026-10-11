@@ -257,6 +257,129 @@ sample.doAction('test');
             self.assertTrue(bool(func.description))
             self.assertTrue(bool(func.return_summary))
 
+    def test_property_primary_key_collision_fixed(self):
+        # 1. js-apis-audio.md: AudioRenderer.state vs AudioCapturer.state
+        audio_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-audio-kit/js-apis-audio.md"
+        if os.path.exists(audio_path):
+            with open(audio_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-audio-kit/js-apis-audio.md", content)
+            state_chunks = [c for c in chunks if c.api_name == "state"]
+            self.assertEqual(len(state_chunks), 2)
+            parents = set(c.parent_title for c in state_chunks)
+            self.assertEqual(parents, {"AudioRenderer", "AudioCapturer"})
+            chunk_ids = set(c.chunk_id for c in state_chunks)
+            self.assertEqual(len(chunk_ids), 2, "State property chunk IDs must not collide")
+
+        # 2. js-apis-socket.md: TCPSocketConnection.clientId vs LocalSocketConnection.clientId vs TLSSocketConnection.clientId
+        socket_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-network-kit/js-apis-socket.md"
+        if os.path.exists(socket_path):
+            with open(socket_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-network-kit/js-apis-socket.md", content)
+            client_id_chunks = [c for c in chunks if c.api_name == "clientId"]
+            self.assertEqual(len(client_id_chunks), 3)
+            parents = set(c.parent_title for c in client_id_chunks)
+            self.assertEqual(parents, {"TCPSocketConnection", "LocalSocketConnection", "TLSSocketConnection"})
+            chunk_ids = set(c.chunk_id for c in client_id_chunks)
+            self.assertEqual(len(chunk_ids), 3, "clientId property chunk IDs must not collide")
+
+        # 3. js-apis-net-connection.md: NetConnectionPropertyInfo.netHandle vs NetBlockStatusInfo.netHandle
+        conn_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-network-kit/js-apis-net-connection.md"
+        if os.path.exists(conn_path):
+            with open(conn_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-network-kit/js-apis-net-connection.md", content)
+            nethandle_props = [c for c in chunks if c.api_name == "netHandle" and c.category == "property"]
+            self.assertGreaterEqual(len(nethandle_props), 2)
+            parents = set(c.parent_title for c in nethandle_props)
+            self.assertIn("NetConnectionPropertyInfo", parents)
+            self.assertIn("NetBlockStatusInfo", parents)
+            chunk_ids = set(c.chunk_id for c in nethandle_props)
+            self.assertEqual(len(chunk_ids), len(nethandle_props), "netHandle property chunk IDs must not collide")
+
+    def test_zero_chunk_docs_parsing_fixed(self):
+        # 1. Audio constants doc (no H2)
+        const_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-audio-kit/arkts-apis-audio-c.md"
+        if os.path.exists(const_path):
+            with open(const_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-audio-kit/arkts-apis-audio-c.md", content)
+            self.assertGreaterEqual(len(chunks), 3)
+            names = [c.api_name for c in chunks]
+            self.assertIn("DEFAULT_VOLUME_GROUP_ID", names)
+            self.assertIn("DEFAULT_INTERRUPT_GROUP_ID", names)
+
+        # 2. Kernel error codes doc (no H2)
+        err_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-network-kit/errorcode-kernel.md"
+        if os.path.exists(err_path):
+            with open(err_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-network-kit/errorcode-kernel.md", content)
+            self.assertGreaterEqual(len(chunks), 60)
+            names = [c.api_name for c in chunks]
+            self.assertIn("EPERM", names)
+
+        # 3. Readme / navigation doc (no H2)
+        readme_path = "official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference/apis-network-kit/Readme-CN.md"
+        if os.path.exists(readme_path):
+            with open(readme_path, "r", encoding="utf-8") as fp:
+                content = fp.read()
+            parser = DocParser(version="v6.0.0.1-Release")
+            chunks = parser.parse_file_content("apis-network-kit/Readme-CN.md", content)
+            self.assertEqual(len(chunks), 1)
+            self.assertEqual(chunks[0].category, "overview")
+
+    def test_h3_class_h4_property_hierarchy_and_collision_synthetic(self):
+        sample_md = """# @test.module (测试模块)
+## TestNamespace
+### FirstClass
+#### 属性
+| 名称 | 类型 | 可选 | 说明 |
+| -- | -- | -- | -- |
+| id | string | 否 | FirstClass ID |
+### SecondClass
+#### 属性
+| 名称 | 类型 | 可选 | 说明 |
+| -- | -- | -- | -- |
+| id | string | 否 | SecondClass ID |
+"""
+        parser = DocParser(version="vTest")
+        chunks = parser.parse_file_content("test/h3_h4.md", sample_md)
+        id_chunks = [c for c in chunks if c.api_name == "id"]
+        self.assertEqual(len(id_chunks), 2)
+        parents = {c.parent_title for c in id_chunks}
+        self.assertEqual(parents, {"FirstClass", "SecondClass"})
+        self.assertNotEqual(id_chunks[0].chunk_id, id_chunks[1].chunk_id)
+
+    def test_multiple_property_tables_same_property_name_synthetic(self):
+        sample_md = """# @test.camera (测试相机)
+## CameraFormat
+| 名称 | 值 | 说明 |
+| -- | -- | -- |
+| FORMAT_RAW | 1 | 格式1 |
+## CameraFormat
+| 名称 | 值 | 说明 |
+| -- | -- | -- |
+| FORMAT_RAW | 1 | 格式1系统说明 |
+"""
+        parser = DocParser(version="vTest")
+        chunks = parser.parse_file_content("test/multi_table.md", sample_md)
+        raw_chunks = [c for c in chunks if c.api_name == "FORMAT_RAW"]
+        self.assertEqual(len(raw_chunks), 2)
+        self.assertNotEqual(raw_chunks[0].chunk_id, raw_chunks[1].chunk_id)
+
+    def test_clean_sup_markdown_decorations(self):
+        clean, since, dep = clean_sup("**属性**")
+        self.assertEqual(clean, "属性")
+        clean2, _, _ = clean_sup("[MyLink](link.md)")
+        self.assertEqual(clean2, "MyLink")
+
 
 class TestDocIndexerAndRetriever(unittest.TestCase):
     @classmethod
@@ -417,6 +540,85 @@ class TestDocIndexerAndRetriever(unittest.TestCase):
         comp = self.retriever.compare_api_across_versions("NonExistentFakeAPI12345")
         self.assertEqual(len(comp.found_versions), 0)
         self.assertEqual(len(comp.missing_versions), len(comp.target_versions))
+
+    def test_database_stats_and_fts_alignment(self):
+        stats = self.indexer.get_stats()
+        self.assertGreater(stats["total_chunks"], 1000)
+        self.assertEqual(stats["total_chunks"], stats["total_fts"], "doc_chunks count must strictly match doc_chunks_fts count")
+
+        # Verify zero duplicate chunk IDs in FTS virtual table
+        conn = self.indexer.get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT chunk_id, COUNT(*) FROM doc_chunks_fts GROUP BY chunk_id HAVING COUNT(*) > 1;")
+            fts_dups = cur.fetchall()
+            self.assertEqual(len(fts_dups), 0, f"No duplicate chunk IDs allowed in FTS, found: {fts_dups}")
+        finally:
+            conn.close()
+
+    def test_search_tcp_no_tls_mismatch(self):
+        # Searching TCPSocketServer should return TCP connection clientId, never TLSSocketServer description
+        kw_results = self.retriever.search_by_keyword("TCPSocketServer", version="v6.0.0.1-Release")
+        self.assertGreater(len(kw_results), 0)
+        client_matches = [r for r in kw_results if r.chunk.api_name == "clientId"]
+        if client_matches:
+            top_client = client_matches[0]
+            self.assertEqual(top_client.chunk.parent_title, "TCPSocketConnection")
+            self.assertIn("TCPSocketServer", top_client.chunk.description)
+            self.assertNotIn("TLSSocketServer", top_client.chunk.description)
+
+    def test_independent_audio_state_retrieval(self):
+        # AudioRenderer.state and AudioCapturer.state must both exist and be independently retrievable
+        res_render = self.retriever.search_by_name("AudioRenderer.state", exact=True, version="v6.0.0.1-Release")
+        self.assertGreater(len(res_render), 0)
+        self.assertEqual(res_render[0].chunk.parent_title, "AudioRenderer")
+
+        res_capt = self.retriever.search_by_name("AudioCapturer.state", exact=True, version="v6.0.0.1-Release")
+        self.assertGreater(len(res_capt), 0)
+        self.assertEqual(res_capt[0].chunk.parent_title, "AudioCapturer")
+
+    def test_zero_chunk_docs_retrieval(self):
+        # Audio constants retrievable
+        res_const = self.retriever.search_by_name("DEFAULT_VOLUME_GROUP_ID", version="v6.0.0.1-Release")
+        self.assertGreater(len(res_const), 0)
+        self.assertEqual(res_const[0].chunk.api_name, "DEFAULT_VOLUME_GROUP_ID")
+
+        # Kernel error code retrievable
+        res_err = self.retriever.search_by_name("EPERM", version="v6.0.0.1-Release")
+        self.assertGreater(len(res_err), 0)
+        self.assertEqual(res_err[0].chunk.api_name, "EPERM")
+
+    def test_empty_and_whitespace_query_handling(self):
+        # Empty and whitespace searches must safely return empty results, never leak arbitrary database rows
+        self.assertEqual(self.retriever.search_by_name(""), [])
+        self.assertEqual(self.retriever.search_by_name("   "), [])
+        self.assertEqual(self.retriever.search_by_keyword(""), [])
+        self.assertEqual(self.retriever.search_by_keyword("   "), [])
+
+        comp = self.retriever.compare_api_across_versions("")
+        self.assertEqual(len(comp.found_versions), 0)
+        self.assertEqual(comp.api_name, "")
+
+    def test_fts_orphan_cleanup_and_sync(self):
+        # Insert a deliberate orphan record directly into doc_chunks_fts
+        conn = self.indexer.get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO doc_chunks_fts (chunk_id, api_name, parent_title, full_name, search_tokens) "
+                    "VALUES ('orphan_test_123', 'orphan_api', '', '', 'orphan_token');"
+                )
+        finally:
+            conn.close()
+
+        # Check orphan exists in FTS
+        stats = self.indexer.get_stats()
+        self.assertEqual(stats["total_fts"], stats["total_chunks"] + 1)
+
+        # Call sync_fts_index() and confirm orphan is purged and counts match 100%
+        self.indexer.sync_fts_index()
+        stats_synced = self.indexer.get_stats()
+        self.assertEqual(stats_synced["total_fts"], stats_synced["total_chunks"])
 
 
 if __name__ == "__main__":

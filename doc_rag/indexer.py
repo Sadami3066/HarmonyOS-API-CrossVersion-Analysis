@@ -121,14 +121,19 @@ class DocIndexer:
             conn.close()
 
     def ingest_chunks(self, chunks: List[DocChunk]) -> int:
-        """Batch insert or replace DocChunks into SQLite and FTS5 index."""
+        """Batch insert or replace DocChunks into SQLite and FTS5 index with in-memory deduplication."""
         if not chunks:
             return 0
+
+        # In-memory deduplication by chunk_id to prevent duplicate rows in FTS5
+        unique_chunks: Dict[str, DocChunk] = {}
+        for c in chunks:
+            unique_chunks[c.chunk_id] = c
 
         chunk_rows = []
         fts_rows = []
 
-        for c in chunks:
+        for c in unique_chunks.values():
             # Build search tokens from all structured fields and raw markdown content
             searchable_text = f"{c.api_name} {c.parent_title} {c.full_name} {c.signature} {c.description} {c.parameters_summary} {c.return_summary} {c.error_codes_summary} {c.permission} {c.syscap} {c.raw_content}"
             search_tokens = tokenize_for_search(searchable_text)
@@ -193,8 +198,8 @@ class DocIndexer:
                     chunk_rows,
                 )
 
-                # Update FTS5 table
-                chunk_ids = [c[0] for c in chunk_rows]
+                # Update FTS5 table: delete any existing entries for these IDs, then insert once per chunk
+                chunk_ids = list(unique_chunks.keys())
                 cur.executemany("DELETE FROM doc_chunks_fts WHERE chunk_id = ?;", [(cid,) for cid in chunk_ids])
                 cur.executemany(
                     """
@@ -206,7 +211,7 @@ class DocIndexer:
         finally:
             conn.close()
 
-        return len(chunks)
+        return len(unique_chunks)
 
     def ingest_directory(
         self,
@@ -306,7 +311,41 @@ class DocIndexer:
                 chunk_ids = [row[0] for row in cur.fetchall()]
                 cur.execute("DELETE FROM doc_chunks WHERE version = ?;", (version,))
                 cur.executemany("DELETE FROM doc_chunks_fts WHERE chunk_id = ?;", [(cid,) for cid in chunk_ids])
+                # Ensure no orphaned FTS records remain
+                cur.execute("DELETE FROM doc_chunks_fts WHERE chunk_id NOT IN (SELECT chunk_id FROM doc_chunks);")
                 return len(chunk_ids)
+        finally:
+            conn.close()
+
+    def sync_fts_index(self) -> int:
+        """Rebuild or sync doc_chunks_fts from doc_chunks to ensure 100% alignment without orphans."""
+        conn = self.get_connection()
+        try:
+            with conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM doc_chunks_fts;")
+                cur.execute(
+                    """
+                    SELECT chunk_id, api_name, parent_title, full_name, signature,
+                           description, parameters_summary, return_summary,
+                           error_codes_summary, permission, syscap, raw_content
+                    FROM doc_chunks;
+                    """
+                )
+                rows = cur.fetchall()
+                fts_rows = []
+                for r in rows:
+                    searchable_text = f"{r[1]} {r[2]} {r[3]} {r[4]} {r[5]} {r[6]} {r[7]} {r[8]} {r[9]} {r[10]} {r[11]}"
+                    search_tokens = tokenize_for_search(searchable_text)
+                    fts_rows.append((r[0], r[1], r[2], r[3], search_tokens))
+                cur.executemany(
+                    """
+                    INSERT INTO doc_chunks_fts (chunk_id, api_name, parent_title, full_name, search_tokens)
+                    VALUES (?, ?, ?, ?, ?);
+                    """,
+                    fts_rows,
+                )
+                return len(fts_rows)
         finally:
             conn.close()
 
@@ -318,6 +357,9 @@ class DocIndexer:
 
             cur.execute("SELECT COUNT(*) FROM doc_chunks;")
             total_chunks = cur.fetchone()[0]
+
+            cur.execute("SELECT COUNT(*) FROM doc_chunks_fts;")
+            total_fts = cur.fetchone()[0]
 
             cur.execute("SELECT version, COUNT(*) FROM doc_chunks GROUP BY version;")
             by_version = {row[0]: row[1] for row in cur.fetchall()}
@@ -333,6 +375,7 @@ class DocIndexer:
 
             return {
                 "total_chunks": total_chunks,
+                "total_fts": total_fts,
                 "distinct_apis": distinct_apis,
                 "by_version": by_version,
                 "by_category": by_category,

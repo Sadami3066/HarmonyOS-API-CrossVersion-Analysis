@@ -236,7 +236,12 @@
   - [x] 2. 独立 SQLite + FTS5 索引库实现与优化入库（doc_rag/indexer.py）：搭建 doc_chunks 结构表与 doc_chunks_fts 虚表，定制中英文与技术标识符分词器（CJK unigram+bigram），支持本地目录与直接读取 zip 归档入库。效果：网络、音频、通知三 Kit 共 6,582 块结构化入库完成。
   - [x] 3. 多维度检索与跨版本属性精准对比引擎（doc_rag/retriever.py）：实现查询输入规范化（支持 `createHttp()`、`http.createHttp`）、嵌套父子属性精准查询（`AudioRenderer.state`），彻底移除 `compare_api_across_versions` 中过度宽松的 `LIKE %clean_name%` 模糊匹配，消除跨 API 脏召回（如查 `createHttp` 不再混入 `createHttpResponseCache`）；增强 FTS5 操作符与特殊符号安全转义机制。
   - [x] 4. CLI 入口脚本（ingest_official_docs.py, query_official_docs.py）：支持批量导入、交互查询与 JSON 输出。
-  - [x] 5. 自动化测试套件（test_official_doc_rag.py）：扩展至 18 项测试（覆盖 C-API 声明、冒号位置容错、独立 Interface 容器层级、FTS 符号容错、精确对比与属性增量等），实跑 100% 通过（Ran 18 tests in 7.010s, OK）。
+  - [x] 5. 自动化测试套件（test_official_doc_rag.py）：扩展至 29 项测试（覆盖 C-API 声明、冒号位置容错、独立 Interface 容器层级、FTS 符号容错、精确对比与属性增量、属性主键防碰撞、无H2文档解析、FTS严格对齐、TCP/TLS独立检索、H3类与H4属性层级防碰撞、同文档多同名属性表去重防碰撞、空输入与空白串安全拦截、FTS孤儿索引原子清理等），实跑 100% 通过（Ran 29 tests in 7.983s, OK）。
+  - [x] 6. 修复组长反馈的属性覆盖、索引错配与零块遗漏缺陷及深度二次排查修复（doc_rag/parser.py, doc_rag/indexer.py, doc_rag/retriever.py, ingest_official_docs.py, query_official_docs.py）：
+    - 修复属性主键碰撞与多级层级穿透：重构 `DocParser` 引入完整 H3/H4 多级层级追踪（`current_h3`），修复 H4 属性与方法跳过 H3 类直接挂在 H2 导致不同类同名属性（如 `AsyncLock.name` 与 `AsyncLockInfo.name`）覆盖的隐患；彻底禁止将 section 名称 `"属性"` / `"常量"` 用作父类容器名，正确绑定 `AudioRenderer`、`TCPSocketConnection`、`NetConnectionPropertyInfo` 等真实类名；将属性与错误码计数器（`prop_counters`, `err_counters`）提升至文件级作用域，彻底消除单文档内多表同名属性（如 `CameraFormat.CAMERA_FORMAT_DNG`）的主键冲突；
+    - 修复 FTS 孤儿索引与搜索错配：`ingest_chunks` 增加批次内存去重与 FTS5 原子清理重插，`clear_version` 与 `sync_fts_index` 引入外连接原子孤儿数据清理（`DELETE FROM doc_chunks_fts WHERE chunk_id NOT IN (SELECT chunk_id FROM doc_chunks)`），并在 `search_by_keyword` 查询中增加 `GROUP BY dc.chunk_id`，杜绝搜 TCP 返回 TLS 描述的索引幽灵现象；
+    - 修复无二级标题文档零块丢失与标题噪音：在 `extract_sections_by_headings` 中为仅含 `# H1` 的文档增加切块兜底，清洗 `clean_sup` 中粗体（`**属性**`）与 Markdown 超链接修饰，消除 `# # Overview` 等前导符号污染，并在 `DocParser` 中新增 `_extract_error_code_chunks`，使 7 份零块官方文档（音频常量文档、两版本内核错误码文档、4 份 Kit 导航首页）全部成功结构化切块入库；
+    - 修复空查询与空白串泄漏：在 `search_by_name` 与 `compare_api_across_versions` 中加入对空串及纯空白字符的严格校验与短路返回，杜绝全库 LIKE 扫描与脏数据泄露。
 - 分支/提交/PR、本地未提交改动：
   - 任务分支：feat/doc-rag-05a；基线：master 35e72f782fd3c4e618b0b904b9f669f5b3f5dd2c；PR：https://github.com/ZSY1ADBNA/HarmonyOS-API-CrossVersion-Analysis/pull/6 。
   - 新增/优化文件：doc_rag/__init__.py, doc_rag/models.py, doc_rag/parser.py, doc_rag/indexer.py, doc_rag/retriever.py, ingest_official_docs.py, query_official_docs.py, test_official_doc_rag.py, docs/official-doc-ingestion-audit.md。
@@ -244,10 +249,26 @@
   - 环境：Linux, Python 3.13.12, SQLite 3 (内置 FTS5)
   - 工作目录：/home/whywood/project/HarmonyOS-API-CrossVersion-Analysis
   - 测试命令：python3 test_official_doc_rag.py -v
-  - 检索命令：python3 query_official_docs.py --name "createHttp()" --version v6.0.0.1-Release；python3 query_official_docs.py --name "AudioRenderer.state"；python3 query_official_docs.py --compare createHttp；python3 query_official_docs.py --compare HttpRequestOptions
+  - 重新入库命令：
+    - v6.0: python3 ingest_official_docs.py --doc-dir official/docs-OpenHarmony-v6.0.0.1-Release-zh-cn-application-dev-reference/zh-cn/application-dev/reference --version v6.0.0.1-Release --kit apis-network-kit,apis-audio-kit,apis-notification-kit --clear
+    - v6.1: python3 ingest_official_docs.py --zip official/docs-OpenHarmony-v6.1-LTS-zh-cn-application-dev-reference.zip --version v6.1-LTS --kit apis-network-kit --clear
+  - 检索核对命令：
+    - python3 query_official_docs.py --name "AudioRenderer.state"
+    - python3 query_official_docs.py --name "AudioCapturer.state"
+    - python3 query_official_docs.py --keyword "TCPSocketServer"
+    - python3 query_official_docs.py --name "DEFAULT_VOLUME_GROUP_ID"
+    - python3 query_official_docs.py --name "EPERM"
+    - python3 query_official_docs.py --compare "AudioRenderer.state"
+    - python3 query_official_docs.py --stats
 - 预期结果、实际结果、证据：
-  - 预期：测试 18/18 全部通过；准确识别带括号与模块前缀的 API；版本对比精确聚焦目标 API 及其属性，无无关 API 干扰。
-  - 实际结果：测试 18/18 全部通过；`AudioRenderer.state` 准确召回所属类与属性；`createHttp` 跨版本对比严格隔离 `createHttpResponseCache`；`HttpRequestOptions` 准确识别 6.1 新增 4 项属性；FTS 极端符号输入无异常。
+  - 预期：测试 29/29 全部通过；5 组属性主键覆盖彻底消失；FTS 虚表记录数与主表严格 1:1 对齐（0 孤儿数据）；7 份零块文档被正确解析入库；TCP 关键词检索不再错配 TLS 属性；空查询安全短路返回。
+  - 实际结果：
+    - 测试结果：29 项测试全通（Ran 29 tests in 7.983s, OK）。
+    - 数据库状态：总记录数达到 6,781 块（v6.0: 4,779 块, v6.1: 2,002 块）；FTS 虚表记录数精准为 6,781 块，两者差值为 0，FTS 重复主键为 0，孤儿记录为 0。
+    - 全库压力审计结果：全量 4 版本 13,887 个 Markdown 文件压力解析，碰撞数彻底降为 0（v6.0 全量 73,022 块碰撞为 0，v6.1 全量 75,330 块碰撞为 0）。
+    - 属性覆盖消除：`AudioRenderer.state`（“音频渲染器的状态”）与 `AudioCapturer.state`（“音频采集器状态”）均拥有独立主键，共存且独立精确检索；`TCPSocketConnection.clientId`、`LocalSocketConnection.clientId`、`TLSSocketConnection.clientId` 三者独立；`NetConnectionPropertyInfo.netHandle` 与 `NetBlockStatusInfo.netHandle` 独立。
+    - 检索错配消除：检索 `TCPSocketServer` 准确返回 `TCPSocketServer` / `TCPSocketConnection` 对应条目，不再混入或返回 `TLSSocketServer` 描述。
+    - 零块文档入库：7 份官方文档成功入库并可检索（`arkts-apis-audio-c.md` 提取 3 块含常量 `DEFAULT_VOLUME_GROUP_ID`、`errorcode-kernel.md` 两版本分别提取 62 块与 130 块含错误码 `EPERM`、4 份 Kit Readme 提取 1 块 Overview）。
 - 决定及原因、阻塞及所需信息：
   - 决定：采用内置 SQLite FTS5，完全无外部 C 扩展或模型依赖，保证轻量、零依赖与可重现；官方大 zip 采用 zipfile 流式读取，无需解压 300MB+ 占用额外磁盘；大模型直接基于两版本属性对比检索结果进行差异总结，免除全版本自动化 diff 引擎。
   - 全量入库决策：对 4 个大版本全量 13,887 个 Markdown 审计完成，明确不试图用单一通用脚本解决全部 52 个 Kit 的所有排版差异；后续其他 Kit 与版本入库由对应 Agent 结合模块特征按需编写或适配专用脚本，重点防范主键碰撞、零切块丢失、C-API 拦截与 FTS5 无索引扫描性能陷阱。已形成专属指引文档 docs/official-doc-ingestion-audit.md 并在 AGENTS.md、README.md、步骤 05 说明中建立入口。
@@ -259,3 +280,4 @@
   - 配合步骤 05B（智能体调用）将 DocRetriever 包装为 Agent Tool（如 LangChain Tool 或标准函数），为大模型提供 API 属性与文档查证支撑。
 - 最后更新时间（时区）、进展记录：
   - 2026-10-09（Asia/Shanghai）：完成 05A 官方文档深度审查与缺陷修复，18 项测试全部通过；完成 4 版本 13,887 文件全量压力审计与缺陷归因，发布 docs/official-doc-ingestion-audit.md 并接入主线文档入口。
+  - 2026-10-11（Asia/Shanghai）：彻底修复组长反馈的 3 处核心缺陷（属性主键覆盖、FTS 索引孤儿与检索错配、无二级标题文档零块遗漏）；深度审查发现并根除 H3/H4 多级类与属性层级逃逸、文档内多表同名属性计数器重置碰撞、空查询全表 LIKE 泄露、粗体标题过滤失效等多处隐患；单元与集成测试套件扩展至 29 项全部通过；全库全量审计达到 0 碰撞，数据库记录数达到 6,781 且 FTS 虚表 1:1 严格对齐（0 脏记录），AudioRenderer/AudioCapturer 独立共存检索，7 份零块文档完整入库。

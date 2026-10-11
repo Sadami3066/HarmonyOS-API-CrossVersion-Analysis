@@ -30,6 +30,9 @@ def clean_sup(text: str) -> Tuple[str, str, bool]:
             since = num_m.group(1)
 
     clean = re.sub(r"<sup>.*?</sup>", "", text).strip()
+    clean = re.sub(r"<!--.*?-->", "", clean).strip()
+    clean = re.sub(r"^\*\*(.*?)\*\*$", r"\1", clean).strip()
+    clean = re.sub(r"^\[(.*?)\]\(.*?\)$", r"\1", clean).strip()
 
     # Check text deprecated flags
     if "(deprecated)" in clean.lower():
@@ -130,13 +133,26 @@ def extract_sections_by_headings(content: str) -> List[Tuple[int, str, str]]:
     matches = list(heading_pattern.finditer(content))
 
     if not matches:
+        # Fallback for documents without H2-H4 headings (e.g. Readme-CN, Constants, ErrorCodes)
+        h1_m = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
+        if h1_m:
+            heading_text = h1_m.group(1).strip()
+            body = content[h1_m.end():].strip()
+            if body or heading_text:
+                return [(1, heading_text, body)]
         return []
 
     sections = []
     # Content before first heading
     pre_content = content[: matches[0].start()].strip()
     if pre_content:
-        sections.append((1, "# Overview", pre_content))
+        h1_m = re.match(r"^#\s+(.+)$", pre_content)
+        if h1_m:
+            heading_text = h1_m.group(1).strip()
+            body = pre_content[h1_m.end():].strip()
+            sections.append((1, heading_text, body))
+        else:
+            sections.append((1, "Overview", pre_content))
 
     for idx, match in enumerate(matches):
         level = len(match.group(1))
@@ -176,7 +192,7 @@ class DocParser:
 
         # H1 Title
         h1_m = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
-        file_title = h1_m.group(1).strip() if h1_m else os.path.basename(file_path)
+        file_title = re.sub(r"<!--.*?-->", "", h1_m.group(1)).strip() if h1_m else os.path.basename(file_path)
 
         # Extract module name (e.g., @ohos.net.http, @kit.AudioKit)
         module = ""
@@ -207,7 +223,7 @@ class DocParser:
         # Check if file defines a specific container (Interface, Class, Struct, Enum)
         container_name = ""
         container_category = ""
-        c_m = re.search(r"^#\s+(Interface|Class|Struct|Enum|Interfaces|Enums)\s*(?:\((.+?)\))?", content, re.MULTILINE | re.IGNORECASE)
+        c_m = re.search(r"^#\s+(?:废弃的|弃用的)?(Interface|Class|Struct|Enum|Interfaces|Enums)\s*(?:\((.+?)\))?", content, re.MULTILINE | re.IGNORECASE)
         if c_m and c_m.group(2):
             raw_cname = c_m.group(2).strip()
             if raw_cname not in ["其他", "others", "Common"]:
@@ -228,8 +244,14 @@ class DocParser:
         current_h2_clean = ""
         current_h2_category = "section"
 
-        # Overload index tracker to disambiguate identical heading names in the same parent
+        current_h3 = ""
+        current_h3_clean = ""
+        current_h3_category = "section"
+
+        # Overload and disambiguation trackers across file
         overload_counters: Dict[str, int] = {}
+        prop_counters: Dict[str, int] = {}
+        err_counters: Dict[str, int] = {}
 
         for level, heading_text, body in sections:
             clean_heading, since, deprecated = clean_sup(heading_text)
@@ -255,17 +277,33 @@ class DocParser:
                     full_name = f"{module}.{container_name}" if module else container_name
                     parent_title = ""
                     heading_path = f"{file_title} > {container_name}"
+                elif clean_heading in ["Constants", "常量"] or "constant" in file_path.lower():
+                    category = "constant"
+                    api_name = clean_heading if clean_heading != "Overview" else "Constants"
+                    parent_title = ""
+                    heading_path = file_title
+                    full_name = f"{module}.{api_name}" if module else api_name
+                elif clean_heading in ["内核错误码", "错误码"] or "errorcode" in file_path.lower() or "错误码" in file_title:
+                    category = "error_code"
+                    api_name = clean_heading if clean_heading != "Overview" else file_title
+                    parent_title = ""
+                    heading_path = file_title
+                    full_name = api_name
                 else:
                     parent_title = ""
-                    api_name = module
+                    api_name = clean_heading if (clean_heading and clean_heading != "Overview") else module
                     heading_path = file_title
                     category = "overview"
-                    full_name = module
+                    full_name = api_name if api_name else module
                 current_h2 = ""
                 current_h2_clean = ""
+                current_h3 = ""
+                current_h3_clean = ""
             elif level == 2:
                 current_h2 = heading_text
                 current_h2_clean = clean_heading
+                current_h3 = ""
+                current_h3_clean = ""
 
                 if container_name:
                     # In a dedicated container file (e.g. AudioRenderer.md)
@@ -332,13 +370,16 @@ class DocParser:
                         full_name = f"{module}.{clean_heading}"
                     current_h2_category = category
 
-            else:  # level >= 3
+            elif level == 3:
+                current_h3 = heading_text
+                current_h3_clean = clean_heading
+
                 if container_name:
                     parent_title = container_name
                     heading_path = f"{file_title} > {container_name} > {clean_heading}"
                 else:
                     parent_title = current_h2_clean
-                    heading_path = f"{file_title} > {current_h2_clean} > {clean_heading}"
+                    heading_path = f"{file_title} > {current_h2_clean} > {clean_heading}" if current_h2_clean else f"{file_title} > {clean_heading}"
 
                 clean_api = clean_heading
                 if clean_api.endswith("()"):
@@ -350,10 +391,47 @@ class DocParser:
                     category = "section"
                 elif current_h2_category in ["enum", "error_code"]:
                     category = current_h2_category
-                elif "函数" in current_h2_clean or "Function" in current_h2_clean:
+                elif "函数" in current_h2_clean or "Function" in current_h2_clean or "函数" in clean_heading:
                     category = "function"
+                elif any(clean_heading.endswith(suffix) for suffix in ["Options", "Params", "Config", "Result"]):
+                    category = "interface"
+                elif "Enum" in clean_heading:
+                    category = "enum"
+                elif re.match(r"^[A-Z][a-zA-Z0-9]+$", clean_heading):
+                    category = "class"
+                current_h3_category = category
 
                 full_name = f"{module}.{parent_title}.{api_name}" if parent_title else f"{module}.{api_name}"
+
+            else:  # level >= 4
+                clean_api = clean_heading
+                if clean_api.endswith("()"):
+                    clean_api = clean_api[:-2]
+                api_name = clean_api
+
+                if current_h3_clean:
+                    parent_title = current_h3_clean
+                    prefix = f"{current_h2_clean} > {current_h3_clean}" if current_h2_clean else current_h3_clean
+                    if container_name and container_name != current_h2_clean:
+                        prefix = f"{container_name} > {prefix}"
+                    heading_path = f"{file_title} > {prefix} > {clean_heading}"
+                    full_name = f"{module}.{current_h2_clean}.{current_h3_clean}.{api_name}" if current_h2_clean else f"{module}.{current_h3_clean}.{api_name}"
+                elif container_name:
+                    parent_title = container_name
+                    heading_path = f"{file_title} > {container_name} > {clean_heading}"
+                    full_name = f"{module}.{container_name}.{api_name}"
+                else:
+                    parent_title = current_h2_clean
+                    heading_path = f"{file_title} > {current_h2_clean} > {clean_heading}" if current_h2_clean else f"{file_title} > {clean_heading}"
+                    full_name = f"{module}.{current_h2_clean}.{api_name}" if current_h2_clean else f"{module}.{api_name}"
+
+                category = "method"
+                if clean_heading in ["属性", "常量", "成员变量"]:
+                    category = "section"
+                elif current_h3_category in ["enum", "error_code"]:
+                    category = current_h3_category
+                elif "函数" in clean_heading or "Function" in clean_heading:
+                    category = "function"
 
             # Extract signature
             signature = ""
@@ -438,13 +516,8 @@ class DocParser:
 
             chunk_id = DocChunk.generate_id(self.version, file_path, heading_path, api_name, disambiguator)
 
-            raw_chunk = (
-                f"## {heading_text}\n\n{body}"
-                if level == 2
-                else f"### {heading_text}\n\n{body}"
-                if level == 3
-                else f"# {heading_text}\n\n{body}"
-            )
+            prefix = "#" * level
+            raw_chunk = f"{prefix} {heading_text}\n\n{body}"
 
             chunk = DocChunk(
                 chunk_id=chunk_id,
@@ -477,7 +550,7 @@ class DocParser:
             )
             chunks.append(chunk)
 
-            # Property Table extraction: if section contains a table of properties/member variables
+            # Property Table extraction: if section contains a table of properties/member variables/constants
             prop_chunks = self._extract_property_chunks(
                 body=body,
                 parent_chunk=chunk,
@@ -488,8 +561,22 @@ class DocParser:
                 subsystem=subsystem,
                 syscap=syscap,
                 container_name=container_name,
+                prop_counters=prop_counters,
             )
             chunks.extend(prop_chunks)
+
+            # Error Code Table extraction: if section contains a table of error codes
+            err_chunks = self._extract_error_code_chunks(
+                body=body,
+                parent_chunk=chunk,
+                file_path=file_path,
+                file_title=file_title,
+                module=module,
+                kit=kit,
+                subsystem=subsystem,
+                err_counters=err_counters,
+            )
+            chunks.extend(err_chunks)
 
         return chunks
 
@@ -504,16 +591,17 @@ class DocParser:
         subsystem: str,
         syscap: str,
         container_name: str = "",
+        prop_counters: Optional[Dict[str, int]] = None,
     ) -> List[DocChunk]:
-        """Extract individual properties from markdown tables in interfaces/options/enums/structs."""
+        """Extract individual properties from markdown tables in interfaces/options/enums/structs/constants."""
         # Never extract properties from method parameter lists
         if parent_chunk.category in ["method", "function"] and parent_chunk.heading_text not in ["属性", "常量", "成员变量"]:
             return []
 
-        # Only parse tables for interfaces, classes, enums, structs, options, or sections named 属性/成员变量
+        # Only parse tables for interfaces, classes, enums, structs, options, constants, or sections named 属性/常量/成员变量
         is_prop_candidate = (
-            parent_chunk.category in ["interface", "class", "enum", "struct", "section"]
-            or parent_chunk.heading_text in ["属性", "常量", "成员变量"]
+            parent_chunk.category in ["interface", "class", "enum", "struct", "section", "constant"]
+            or parent_chunk.heading_text in ["属性", "常量", "成员变量", "Constants"]
             or any(parent_chunk.heading_text.endswith(s) for s in ["Options", "Params", "Config", "Cert", "Result", "Info"])
         )
         if not is_prop_candidate:
@@ -528,7 +616,8 @@ class DocParser:
         header_map = {}
         for idx, h in enumerate(headers):
             h_clean = re.sub(r"<.*?>", "", h).strip()
-            if h_clean in ["名称", "参数名", "属性", "变量名"]:
+            # Do NOT include "参数名" - parameter tables belong to methods/functions, not properties
+            if h_clean in ["名称", "属性", "变量名", "常量", "字段", "成员变量", "枚举项", "枚举值"]:
                 header_map["name"] = idx
             elif h_clean in ["类型", "数据类型"]:
                 header_map["type"] = idx
@@ -541,13 +630,17 @@ class DocParser:
             return []
 
         property_chunks: List[DocChunk] = []
-        # Target parent name
-        if parent_chunk.heading_text in ["属性", "常量", "成员变量"] and container_name:
-            parent_name = container_name
+        # Target parent name: never let parent_name be "属性", "常量" or "成员变量"
+        if parent_chunk.heading_text in ["属性", "常量", "成员变量"]:
+            parent_name = parent_chunk.parent_title or container_name or ""
+        elif parent_chunk.category == "constant" and parent_chunk.heading_level == 1:
+            parent_name = ""
         else:
             parent_name = parent_chunk.api_name
 
         is_c_table = "type" not in header_map
+        if prop_counters is None:
+            prop_counters = {}
 
         for row in table_lines[2:]:
             cols = split_table_row(row)
@@ -587,12 +680,29 @@ class DocParser:
                 if since_m:
                     since = since_m.group(1)
 
-            full_name = f"{module}.{parent_name}.{clean_name}" if parent_name else f"{module}.{clean_name}"
+            # Check syscap in description if not in parent
+            row_meta = extract_metadata_from_text(desc)
+            prop_syscap = row_meta["syscap"] or syscap or parent_chunk.syscap
+            if row_meta["since"] and not since:
+                since = row_meta["since"]
+            if row_meta["deprecated"]:
+                deprecated = True
+
+            full_name = f"{module}.{parent_name}.{clean_name}" if parent_name else f"{module}.{clean_name}" if module else clean_name
             heading_path = f"{file_title} > {parent_name} > {clean_name}" if parent_name else f"{file_title} > {clean_name}"
             signature = f"{clean_name}: {prop_type}" if prop_type else clean_name
 
             raw_row = f"| {' | '.join(cols)} |"
-            chunk_id = DocChunk.generate_id(self.version, file_path, heading_path, clean_name, "prop")
+
+            prop_category = "constant" if (parent_chunk.category == "constant" or parent_chunk.heading_text in ["常量", "Constants"]) else "property"
+            disambig_prefix = "const" if prop_category == "constant" else "prop"
+
+            path_key = f"{file_path}::{heading_path}::{clean_name}::{disambig_prefix}"
+            prop_counters[path_key] = prop_counters.get(path_key, 0) + 1
+            cnt = prop_counters[path_key]
+            disambiguator = f"{disambig_prefix}_{cnt}" if cnt > 1 else disambig_prefix
+
+            chunk_id = DocChunk.generate_id(self.version, file_path, heading_path, clean_name, disambiguator)
 
             prop_chunk = DocChunk(
                 chunk_id=chunk_id,
@@ -606,14 +716,14 @@ class DocParser:
                 heading_text=clean_name,
                 parent_title=parent_name,
                 heading_path=heading_path,
-                category="property",
+                category=prop_category,
                 api_name=clean_name,
                 full_name=full_name,
                 signature=signature,
                 since=since or parent_chunk.since,
                 deprecated=deprecated or parent_chunk.deprecated,
                 permission=parent_chunk.permission,
-                syscap=syscap or parent_chunk.syscap,
+                syscap=prop_syscap,
                 atomic_service=atomic_service or parent_chunk.atomic_service,
                 description=desc,
                 parameters_summary="",
@@ -626,3 +736,107 @@ class DocParser:
             property_chunks.append(prop_chunk)
 
         return property_chunks
+
+    def _extract_error_code_chunks(
+        self,
+        body: str,
+        parent_chunk: DocChunk,
+        file_path: str,
+        file_title: str,
+        module: str,
+        kit: str,
+        subsystem: str,
+        err_counters: Optional[Dict[str, int]] = None,
+    ) -> List[DocChunk]:
+        """Extract individual error codes from markdown tables."""
+        if parent_chunk.category != "error_code" and "错误码" not in parent_chunk.heading_text and "ErrorCode" not in parent_chunk.heading_text:
+            return []
+
+        lines = body.splitlines()
+        table_lines = [l.strip() for l in lines if l.strip().startswith("|")]
+        if len(table_lines) < 3:
+            return []
+
+        headers = split_table_row(table_lines[0])
+        header_map = {}
+        for idx, h in enumerate(headers):
+            h_clean = re.sub(r"<.*?>", "", h).strip()
+            if h_clean in ["错误码数值", "错误码ID", "错误码", "Error Code", "Code"]:
+                header_map["code"] = idx
+            elif h_clean in ["错误码定义", "错误名称", "定义", "Error Name", "Name"]:
+                header_map["name"] = idx
+            elif h_clean in ["错误码描述", "错误信息", "说明", "描述", "Error Message", "Description"]:
+                header_map["desc"] = idx
+
+        if "code" not in header_map and "name" not in header_map:
+            return []
+        if "desc" not in header_map:
+            return []
+
+        if err_counters is None:
+            err_counters = {}
+
+        error_chunks: List[DocChunk] = []
+        parent_name = parent_chunk.api_name or parent_chunk.heading_text or "错误码"
+
+        for row in table_lines[2:]:
+            cols = split_table_row(row)
+            if len(cols) <= max(header_map.values()):
+                continue
+
+            code_val = cols[header_map["code"]] if "code" in header_map and len(cols) > header_map["code"] else ""
+            code_name = cols[header_map["name"]] if "name" in header_map and len(cols) > header_map["name"] else ""
+            desc = cols[header_map["desc"]] if len(cols) > header_map["desc"] else ""
+
+            if not code_val and not code_name:
+                continue
+            if code_val.startswith("---") or code_name.startswith("---"):
+                continue
+
+            api_name = code_name if code_name else code_val
+            heading_text = f"{code_val} {code_name}".strip() if code_val and code_name else (code_name or code_val)
+            heading_path = f"{file_title} > {heading_text}"
+            full_name = f"{parent_name}.{api_name}" if parent_name else api_name
+            signature = f"{code_val}: {code_name}" if code_val and code_name else heading_text
+            raw_row = f"| {' | '.join(cols)} |"
+
+            base_disambig = f"err_{code_val}" if code_val else f"err_{api_name}"
+            err_key = f"{file_path}::{heading_path}::{api_name}::{base_disambig}"
+            err_counters[err_key] = err_counters.get(err_key, 0) + 1
+            cnt = err_counters[err_key]
+            disambiguator = f"{base_disambig}_{cnt}" if cnt > 1 else base_disambig
+
+            chunk_id = DocChunk.generate_id(self.version, file_path, heading_path, api_name, disambiguator)
+
+            err_chunk = DocChunk(
+                chunk_id=chunk_id,
+                version=self.version,
+                kit=kit,
+                subsystem=subsystem,
+                module=module,
+                file_path=file_path,
+                file_title=file_title,
+                heading_level=parent_chunk.heading_level + 1,
+                heading_text=heading_text,
+                parent_title=parent_name,
+                heading_path=heading_path,
+                category="error_code",
+                api_name=api_name,
+                full_name=full_name,
+                signature=signature,
+                since=parent_chunk.since,
+                deprecated=parent_chunk.deprecated,
+                permission=parent_chunk.permission,
+                syscap=parent_chunk.syscap,
+                atomic_service=parent_chunk.atomic_service,
+                description=desc,
+                parameters_summary="",
+                return_summary="",
+                error_codes_summary="",
+                example="",
+                raw_content=raw_row,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            error_chunks.append(err_chunk)
+
+        return error_chunks

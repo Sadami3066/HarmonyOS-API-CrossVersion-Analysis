@@ -66,6 +66,7 @@ def main():
         else:
             print("=== Doc RAG Database Stats ===")
             print(f"Total Chunks: {stats['total_chunks']}")
+            print(f"Total FTS Chunks: {stats.get('total_fts', 'N/A')}")
             print(f"Distinct APIs: {stats['distinct_apis']}")
             print(f"Versions: {stats['by_version']}")
             print(f"Categories: {stats['by_category']}")

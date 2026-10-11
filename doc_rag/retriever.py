@@ -56,6 +56,8 @@ class DocRetriever:
     ) -> List[SearchResult]:
         """Search APIs by name (supports 'createHttp', 'HttpRequest.request', 'on(\"headersReceive\")', etc.)."""
         clean_name, parent_query, method_query = parse_api_query(name)
+        if not clean_name:
+            return []
 
         sql = """
             SELECT *,
@@ -155,7 +157,7 @@ class DocRetriever:
         fts_match_expr = " AND ".join(fts_tokens)
 
         sql = """
-            SELECT dc.*, fts.rank as fts_rank
+            SELECT dc.*, MIN(fts.rank) as fts_rank
             FROM doc_chunks_fts fts
             JOIN doc_chunks dc ON dc.chunk_id = fts.chunk_id
             WHERE doc_chunks_fts MATCH ?
@@ -169,7 +171,7 @@ class DocRetriever:
             sql += " AND (dc.kit = ? OR dc.kit LIKE ?)"
             params.extend([kit, f"%{kit}%"])
 
-        sql += " ORDER BY fts.rank ASC LIMIT ?"
+        sql += " GROUP BY dc.chunk_id ORDER BY fts_rank ASC LIMIT ?"
         params.append(limit)
 
         results: List[SearchResult] = []
@@ -339,6 +341,17 @@ class DocRetriever:
     ) -> VersionComparisonResult:
         """Compare attributes of a specific API across multiple versions in the database."""
         clean_name, parent_query, method_query = parse_api_query(api_name)
+        if not clean_name:
+            target_versions = target_versions or []
+            return VersionComparisonResult(
+                api_name=api_name,
+                target_versions=target_versions,
+                found_versions=[],
+                missing_versions=target_versions,
+                by_version={v: [] for v in target_versions},
+                differences={},
+                summary_markdown="No API name provided for comparison.",
+            )
         conn = self._get_connection()
         try:
             cur = conn.cursor()
